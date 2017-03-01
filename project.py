@@ -1,4 +1,6 @@
 import json
+import re
+import regex
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
@@ -73,16 +75,32 @@ def is_artist_page(link_title):
     # Check that this entity has a 'discography' property
     discog_prop = "P358"
     is_artist = bool(wd_page.get("claims").get(discog_prop))
+
     return is_artist
 
 def get_linked_artists(artist):
     # Fetch titles of all links on this artist's page
     wp_page = get_wikipedia_page(artist, "links|revisions", **{"pllimit": "100", "rvprop": "content"})
+
+    def get_associated_acts(content):
+        if 'associated_acts' not in content:
+            return []
+
+        associated_acts = []
+        content = regex.search(r"(?<=associated_acts.+?{{\w+?\|).+?(?=}})", content, regex.S).group(0)
+        content = [re.sub('\* |[\*\[\]\{\}]', '', line) for line in content.splitlines()]
+        for title in content:
+            title = title.replace("&nbsp;", " ")
+            if "|" in title:
+                title = title.split("|")[0]
+            associated_acts.append(title.strip())
+
+        return [s for s in associated_acts if s != '']
+
+    associated_acts = get_associated_acts(wp_page.get('revisions')[0].get('*'))
     link_titles = [link.get('title') for link in wp_page.get('links')]
 
-
-
-    return [title for title in link_titles if is_artist_page(title)]
+    return [title for title in list(set(link_titles[0:5]) | set(associated_acts)) if is_artist_page(title)]
 
 
 def order_by_page_view(titles):
@@ -99,11 +117,12 @@ def compare_related(wiki_artists, spotify_artists):
 if __name__ == '__main__':
     # argparse
 
-    input_names = ["Billy Joel"]
+    input_names = ["Tame Impala"]
 
     for input_name in input_names:
         if not is_artist_page((input_name)):
-            print("{0} is not a musical artist (check spelling)")
+            print("{0} is not a valid articile title, or has no listed discography (is this a musical artist?)".format(input_name))
+            exit(1)
 
         print(get_linked_artists(input_name))
 
