@@ -2,6 +2,7 @@ import argparse
 import json
 import re
 import regex
+import time
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import urlopen
@@ -105,8 +106,9 @@ def is_artist_page(link_title, get_spotify_id=False):
     if not wp_page:
         return no_result
 
-    wikibase_id = wp_page.get("pageprops")
-    wikibase_id = wikibase_id.get("wikibase_item")
+    wikibase_id = wp_page.get("pageprops", {}).get("wikibase_item")
+    if not wikibase_id:
+        return no_result
 
     # Get wikidata entity
     wd_page = get_wikidata_page(wikibase_id)
@@ -115,10 +117,11 @@ def is_artist_page(link_title, get_spotify_id=False):
 
     # Check that this entity has any properties indicating it is a musical artist
     claims = wd_page.get("claims")
-    artist_props = ("P358", "P1728", "P1902")
+    instance_claim = claims.get("P31", [{}])[0].get("mainsnak", {}).get("datavalue", {}).get("value", {}).get("numeric-id")
+    artist_props = ("P358", "P1728", "P1902", "P412", "P1303")
     spotify_prop = "P1902"
-    # artist_props = ("P358", "P1953", "P434", "P1728", "P1902")
-    is_artist = any([claims.get(prop, False) for prop in artist_props])
+    is_artist = any([claims.get(prop, False) for prop in artist_props]) or \
+                instance_claim in [215380, 42998, 131186, 1135557, 281643, 207378]
     spotify_id = claims.get(spotify_prop, None)
     if spotify_id:
         spotify_id = spotify_id[0].get('mainsnak').get('datavalue').get('value')
@@ -149,7 +152,7 @@ def get_linked_artists(artist):
             print("Regex could not find associated_acts titles")
             return []
 
-    link_titles = [link.get('title') for link in wp_page.get('links')]
+    link_titles = [link.get('title') for link in wp_page.get('links')[0:20]]
     link_titles.extend(get_associated_acts(wp_page.get('revisions')[0].get('*')))
 
     return [title for title in link_titles if is_artist_page(title)]
@@ -187,21 +190,29 @@ if __name__ == '__main__':
         with open(args.artists_file) as artist_file:
             input_names |= set([line.strip() for line in artist_file.readlines()])
 
+    start = time.time()
     results = {}
     for input_name in input_names:
+        granular_start = time.time()
         is_artist, spotify_id = is_artist_page(input_name, get_spotify_id=True)
         if not is_artist:
             print("{0} is not a valid article title, or has no listed discography (is this a musical artist?)".format(input_name))
         else:
-            results.update({input_name: (order_by_page_view(get_linked_artists(input_name)), spotify_id)})
+            spotify_artists = get_spotify_related_artists(spotify_id)
+            results.update({input_name: (order_by_page_view(get_linked_artists(input_name)), spotify_artists)})
+        granular_end = time.time()
+        print("Time elapsed for %s: %.2fs\n" % (input_name, granular_end - granular_start))
 
-    for input_name, (suggestions, spotify_id) in results.items():
+    for input_name, (suggestions, spotify_artists) in results.items():
         wiki_artists = [name for (name, views) in suggestions if views > -1]
         print("If you like %s, you should try: %s" % (input_name, ', '.join(wiki_artists)))
 
-        spotify_artists = get_spotify_related_artists(spotify_id)
         if spotify_artists:
             accuracy = compare_related(wiki_artists, spotify_artists)
             print("Wiki-Related Artists suggested %d (%.2f%%) of Spotify's related artists for %s" % (*accuracy, input_name))
         else:
-            print("Unfortunately, %s is not on Spotify, so these suggestions are as good as it gets." % input_name)
+            print("Unfortunately, Wikipedia has no Spotify ID for %s, so these suggestions are as good as it gets." % input_name)
+        print()
+
+    end = time.time()
+    print("Total time elapsed: %.2fs" % (end-start))
